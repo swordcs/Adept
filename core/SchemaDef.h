@@ -32,6 +32,12 @@
   if (this->name != other.name) \
     return false;
 
+#define STRUCT_LT_X(type, name)       \
+  if (this->name < other.name)        \
+    return true;                      \
+  if (other.name < this->name)        \
+    return false;
+
 #define STRUCT_FIELDPOS_X(type, name) name##_field,
 
 // the main macro
@@ -51,6 +57,11 @@
         return true;                                                                     \
       }                                                                                  \
       bool operator!=(const struct key &other) const { return !operator==(other); }      \
+      bool operator<(const struct key &other) const                                      \
+      {                                                                                  \
+        APPLY_X_AND_Y(keyfields, STRUCT_LT_X)                                            \
+        return false;                                                                    \
+      }                                                                                  \
       enum                                                                               \
       {                                                                                  \
         APPLY_X_AND_Y(keyfields, STRUCT_FIELDPOS_X) NFIELDS                              \

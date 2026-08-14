@@ -45,6 +45,10 @@ public:
   std::string cdf_path;
   std::size_t cpu_core_id = 0;
 
+  std::size_t runtime_seconds  = 25;
+  std::size_t warmup_seconds   = 10;
+  std::size_t cooldown_seconds = 5;
+
   std::size_t txn_generator_num  = 1;
   std::size_t durable_write_cost = 0;
   std::size_t lock_retry_delay   = 0;  // us
@@ -59,6 +63,8 @@ public:
   bool exact_group_commit = false;
 
   bool mvcc             = false;
+  bool bohm_local       = false;
+  bool bohm_single_spin = false;
 
   bool read_on_replica                  = false;
   bool local_validation                 = false;
@@ -67,18 +73,27 @@ public:
   bool star_dynamic_batch_size          = true;
   bool parallel_locking_and_validation  = true;
 
-  bool same_batch = false;  // calvin
+  bool same_batch = false;  // calvin and bohm
 
   bool aria_read_only_optmization  = true;
   bool aria_reordering_optmization = true;
   bool aria_snapshot_isolation     = false;
 
+  std::size_t ariaFB_lock_manager = 1;
 
+  bool pwv_ycsb_star = false;
 
   bool operation_replication = false;
 
   std::vector<std::string> peers;
   // Adept related
-  bool blocked_optimize = false;
+  bool        blocked_optimize                 = true;
+  bool        adept_pipelined_shipping         = true;
+  std::size_t mirror_cache_size           = 0;
+  std::size_t mirror_cache_warmup_batches = 1;
+
+  // Caracal's pending-version threshold for split-on-demand. A value of 0
+  // keeps shared batch initialization but disables piece splitting.
+  std::size_t caracal_threshold = 16;
 };
 }  // namespace aria

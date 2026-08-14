@@ -1,4 +1,6 @@
-
+//
+// Created by Yi Lu on 9/13/18.
+//
 
 #pragma once
 
@@ -157,15 +159,15 @@ public:
   }
 
 public:
-  RandomType                                                random;
-  DatabaseType                                             &db;
+  RandomType                                                 random;
+  DatabaseType                                              &db;
   QueuePartitioner                                          partitioner;
-  std::atomic<uint32_t>                                     lock_manager_status;
+  std::atomic<uint32_t>                                      lock_manager_status;
   std::vector<std::shared_ptr<QueueExecutor<WorkloadType>>> workers;
-  std::vector<StorageType>                                  storages;
-  std::vector<std::unique_ptr<TransactionType>>            *transactions_ptr;
+  std::vector<StorageType>                                   storages;
+  std::vector<std::unique_ptr<TransactionType>>             *transactions_ptr;
 
-  std::atomic<uint32_t>            epoch;  // add epoch to QueueManager
+  std::atomic<uint32_t>             epoch;  // add epoch to QueueManager
   QueueTxnGenerator<WorkloadType> *txn_generator;
 };
 }  // namespace aria

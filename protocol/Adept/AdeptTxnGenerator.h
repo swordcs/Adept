@@ -1,5 +1,6 @@
 /*
  * @Description: Adept protocol transaction generator
+ * @Author: Jian Geng
  * @Date: 2025-09-16
  */
 #pragma once
@@ -55,7 +56,8 @@ public:
       std::unique_lock<std::mutex> lock(batch_mutex);
 
       do {
-        condition.wait_for(lock, std::chrono::microseconds(500), [this] { return stop_flag.load() || !batch_ready; });
+        condition.wait_for(
+            lock, std::chrono::microseconds(500), [this] { return stop_flag.load() || !batch_ready; });
 
         if (stop_flag.load()) {
           return;
@@ -123,7 +125,7 @@ private:
   DatabaseType             &db;
   const ContextType        &context;
   std::vector<StorageType> &storages;
-  AdeptPartitioner          partitioner;
+  AdeptPartitioner           partitioner;
   WorkloadType              workload;
   RandomType                random;
   std::atomic<bool>        &stop_flag;

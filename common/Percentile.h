@@ -125,6 +125,11 @@ public:
     double mean = std::accumulate(data_.begin(), data_.end(), 0.0, [](double acc, const element_type &v) {
       return acc + static_cast<double>(v);
     }) / static_cast<double>(sz);
+    double variance = std::accumulate(data_.begin(), data_.end(), 0.0, [mean](double acc, const element_type &v) {
+      double diff = static_cast<double>(v) - mean;
+      return acc + diff * diff;
+    }) / static_cast<double>(sz);
+    double stddev = std::sqrt(variance);
 
     std::size_t outliersLow = 0, outliersHigh = 0;
     for (const auto &v : data_) {
@@ -137,7 +142,8 @@ public:
 
     LOG(INFO) << "BoxPlot size=" << sz << " min=" << mn << " Q1=" << q1 << " median=" << median << " Q3=" << q3
               << " max=" << mx << " IQR=" << iqr << " lowerFence=" << lowerFence << " upperFence=" << upperFence
-              << " mean=" << mean << " outliersLow=" << outliersLow << " outliersHigh=" << outliersHigh;
+              << " mean=" << mean << " variance=" << variance << " stddev=" << stddev
+              << " outliersLow=" << outliersLow << " outliersHigh=" << outliersHigh;
   }
 
 private:

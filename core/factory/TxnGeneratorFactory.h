@@ -1,5 +1,6 @@
 /*
  * @Description: Transaction generator factory for creating protocol-specific generators
+ * @Author: Jian Geng
  * @Date: 2025-09-16
  */
 
@@ -15,6 +16,7 @@
 
 #include "protocol/Queue/QueueTxnGenerator.h"
 #include "protocol/Calvin/CalvinTxnGenerator.h"
+#include "protocol/AsyncCalvin/AsyncCalvinTxnGenerator.h"
 
 namespace aria {
 
@@ -45,7 +47,7 @@ public:
   static std::vector<std::shared_ptr<TxnGenerator>> create_generators(
       std::size_t coordinator_id, Database &db, const Context &context, Manager *manager, std::atomic<bool> &stop_flag)
   {
-    std::unordered_set<std::string> protocols = {"Calvin", "Adept", "Queue"};
+    std::unordered_set<std::string> protocols = {"Calvin", "AsyncCalvin", "Adept", "Queue", "Q-Store"};
     CHECK(protocols.count(context.protocol) == 1);
 
     std::vector<std::shared_ptr<TxnGenerator>> generators;
@@ -60,17 +62,31 @@ public:
             coordinator_id, i, db, context, calvin_manager->storages, stop_flag);
         generators.push_back(generator);
       }
+    } else if (context.protocol == "AsyncCalvin") {
+      using TransactionType = aria::AsyncCalvinTransaction;
+      using WorkloadType    = typename InferWorkloadType<Context>::template WorkloadType<TransactionType>;
+
+      auto async_calvin_manager = static_cast<AsyncCalvinManager<WorkloadType> *>(manager);
+      for (auto i = 0u; i < context.txn_generator_num; i++) {
+        auto generator = std::make_shared<AsyncCalvinTxnGenerator<WorkloadType>>(coordinator_id,
+            i,
+            db,
+            context,
+            async_calvin_manager->storages,
+            async_calvin_manager->epoch,
+            stop_flag);
+        generators.push_back(generator);
+      }
     } else if (context.protocol == "Adept") {
       using TransactionType = aria::AdeptTransaction;
       using WorkloadType    = typename InferWorkloadType<Context>::template WorkloadType<TransactionType>;
 
-      auto Adept_manager = static_cast<AdeptManager<WorkloadType> *>(manager);
-      for (auto i = 0u; i < context.txn_generator_num; i++) {
-        auto generator = std::make_shared<AdeptTxnGenerator<WorkloadType>>(
-            coordinator_id, i, db, context, Adept_manager->storages, Adept_manager->epoch, stop_flag);
-        generators.push_back(generator);
-      }
-    } else if (context.protocol == "Queue") {
+      auto adept_manager = static_cast<AdeptManager<WorkloadType> *>(manager);
+      CHECK(context.txn_generator_num == 1);
+      auto generator = std::make_shared<AdeptTxnGenerator<WorkloadType>>(
+          coordinator_id, 0, db, context, adept_manager->storages, adept_manager->epoch, stop_flag);
+      generators.push_back(generator);
+    } else if (context.protocol == "Queue" || context.protocol == "Q-Store") {
       using TransactionType = aria::QueueTransaction;
       using WorkloadType    = typename InferWorkloadType<Context>::template WorkloadType<TransactionType>;
 

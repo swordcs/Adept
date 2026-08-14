@@ -1,14 +1,16 @@
-
+//
+// Created by Yi Lu on 9/13/18.
+//
 
 #pragma once
 
 #include "core/Manager.h"
-#include "protocol/Adept/Adept.h"
-#include "protocol/Adept/AdeptExecutor.h"
-#include "protocol/Adept/AdeptHelper.h"
-#include "protocol/Adept/AdeptPartitioner.h"
-#include "protocol/Adept/AdeptTransaction.h"
-#include "protocol/Adept/AdeptTxnGenerator.h"
+#include "protocol/AsyncCalvin/AsyncCalvin.h"
+#include "protocol/AsyncCalvin/AsyncCalvinExecutor.h"
+#include "protocol/AsyncCalvin/AsyncCalvinHelper.h"
+#include "protocol/AsyncCalvin/AsyncCalvinPartitioner.h"
+#include "protocol/AsyncCalvin/AsyncCalvinTransaction.h"
+#include "protocol/AsyncCalvin/AsyncCalvinTxnGenerator.h"
 
 #include <thread>
 #include <vector>
@@ -16,7 +18,7 @@
 namespace aria {
 
 template <class Workload>
-class AdeptManager : public aria::Manager
+class AsyncCalvinManager : public aria::Manager
 {
 public:
   using base_type = aria::Manager;
@@ -25,7 +27,7 @@ public:
   using DatabaseType = typename WorkloadType::DatabaseType;
   using StorageType  = typename WorkloadType::StorageType;
 
-  using TransactionType = AdeptTransaction;
+  using TransactionType = AsyncCalvinTransaction;
   static_assert(
       std::is_same<typename WorkloadType::TransactionType, TransactionType>::value, "Transaction types do not match.");
   using ContextType = typename DatabaseType::ContextType;
@@ -33,14 +35,14 @@ public:
 
   using BlockedTxnEntryType  = std::tuple<bool, TransactionType *>;
   using BlockedTxnsQueueType = std::deque<BlockedTxnEntryType>;
-  using BlockedTxnsType      = HashMap<1000, uint64_t, BlockedTxnsQueueType>;
+  using BlockedTxnsType = HashMap<1000, uint64_t, std::shared_ptr<BlockedTxnsQueueType>>;
 
-  AdeptManager(std::size_t coordinator_id, std::size_t id, DatabaseType &db, const ContextType &context,
+  AsyncCalvinManager(std::size_t coordinator_id, std::size_t id, DatabaseType &db, const ContextType &context,
       std::atomic<bool> &stopFlag)
       : base_type(coordinator_id, id, context, stopFlag),
         db(db),
         epoch(0),
-        partitioner(coordinator_id, context.coordinator_num, AdeptHelper::string_to_vint(context.replica_group))
+        partitioner(coordinator_id, context.coordinator_num, AsyncCalvinHelper::string_to_vint(context.replica_group))
   {
     storages.resize(context.batch_size);
     blocked_txns = new BlockedTxnsType();
@@ -93,10 +95,7 @@ public:
       // wait for all machines until they finish the execution phase.
       wait4_ack();
 
-      if (cache_ready.load() > context.stats_epochs) {
-        cache_ready.store(-1);
-        DCHECK(cached_set != nullptr);
-      }
+      record_completed_batch();
 
       garbage_collect();
     }
@@ -126,9 +125,9 @@ public:
       // each worker analyse i, i + n, i + 2n transaction
 
       auto batch = txn_generator->get_batch(true);
-      if (!batch || stopFlag.load()) {
-        break;
-      }
+      // Once the coordinator has announced Analysis, every replica must finish
+      // that batch even if its local benchmark timer has just expired.
+      CHECK(batch) << "transaction generator stopped after an Analysis signal";
 
       // pass the ownership of the batch to all executors
       transactions_ptr = batch.get();
@@ -157,21 +156,17 @@ public:
       wait_all_workers_finish();
       send_ack();
 
-      if (cache_ready.load() > context.stats_epochs) {
-        cache_ready.store(-1);
-        DCHECK(cached_set != nullptr);
-      }
     }
   }
 
-  void add_worker(const std::shared_ptr<AdeptExecutor<WorkloadType>> &w) { workers.push_back(w); }
+  void add_worker(const std::shared_ptr<AsyncCalvinExecutor<WorkloadType>> &w) { workers.push_back(w); }
 
   void clear_lock_manager_status() { lock_manager_status.store(0); }
 
   void set_txn_generators(std::vector<std::shared_ptr<TxnGenerator>> &txn_generators)
   {
-    // Adept only uses one txn generator
-    this->txn_generator = static_cast<AdeptTxnGenerator<WorkloadType> *>(txn_generators[0].get());
+    // AsyncCalvin only uses one txn generator
+    this->txn_generator = static_cast<AsyncCalvinTxnGenerator<WorkloadType> *>(txn_generators[0].get());
   }
 
   void garbage_collect()
@@ -183,23 +178,34 @@ public:
     blocked_txns = new BlockedTxnsType();
   }
 
+  void record_completed_batch()
+  {
+    uint64_t committed = 0;
+    uint64_t rejected  = 0;
+    for (const auto &transaction : *transactions_ptr) {
+      if (transaction->abort_no_retry)
+        rejected++;
+      else
+        committed++;
+    }
+    // The batch is replicated across coordinators. Recording completion at
+    // the cluster barrier avoids counting scheduler submissions N times.
+    n_commit.fetch_add(committed);
+    n_abort_no_retry.fetch_add(rejected);
+  }
+
 public:
-  RandomType                                                random;
-  DatabaseType                                             &db;
-  AdeptPartitioner                                          partitioner;
-  std::atomic<uint32_t>                                     lock_manager_status;
-  std::vector<std::shared_ptr<AdeptExecutor<WorkloadType>>> workers;
-  std::vector<StorageType>                                  storages;
-  std::vector<std::unique_ptr<TransactionType>>            *transactions_ptr;
-  std::atomic<uint64_t>                                     globalBlockedCounter{1};
+  RandomType                                               random;
+  DatabaseType                                            &db;
+  AsyncCalvinPartitioner                                          partitioner;
+  std::atomic<uint32_t>                                    lock_manager_status;
+  std::vector<std::shared_ptr<AsyncCalvinExecutor<WorkloadType>>> workers;
+  std::vector<StorageType>                                 storages;
+  std::vector<std::unique_ptr<TransactionType>>           *transactions_ptr;
+  std::atomic<uint64_t>                                    globalBlockedCounter{1};
 
-  AdeptTxnGenerator<WorkloadType> *txn_generator;
-  std::atomic<uint32_t>            epoch;  // add epoch to AdeptManager
-  BlockedTxnsType                 *blocked_txns;
-
-  // for hot data stats
-  LockfreeQueue<aria::AdeptRWKey *>  remote_key_queue;
-  std::atomic<int32_t>               cache_ready{0};
-  std::unordered_map<int32_t, bool> *cached_set;
+  AsyncCalvinTxnGenerator<WorkloadType> *txn_generator;
+  std::atomic<uint32_t>           epoch;  // add epoch to AsyncCalvinManager
+  BlockedTxnsType                *blocked_txns;
 };
 }  // namespace aria

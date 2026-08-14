@@ -1,4 +1,6 @@
-
+//
+// Created by Yi Lu on 9/15/18.
+//
 
 #pragma once
 
@@ -10,7 +12,7 @@
 
 namespace aria {
 
-class AdeptHelper
+class AsyncCalvinHelper
 {
 
 public:
@@ -73,7 +75,7 @@ public:
   /**
    *
    * The following code is adapted from TwoPLHelper.h
-   * For Adept, we can use lower 63 bits for read locks.
+   * For AsyncCalvin, we can use lower 63 bits for read locks.
    * However, 511 locks are enough and the code above is well tested.
    *
    * [write lock bit (1) |  read lock bit (9) -- 512 - 1 locks | reservation(2) | epoch (32) | position (20)]
@@ -130,7 +132,7 @@ public:
         old_value = a.load();
       } while (is_reserve_locked(old_value));
 
-      if (is_read_locked(old_value) || is_write_locked(old_value)) {
+      if (is_read_locked(old_value) || is_write_locked(old_value) || get_waiter(old_value) != 0) {
         return false;
       }
       new_value = old_value + (WRITE_LOCK_BIT_MASK << WRITE_LOCK_BIT_OFFSET);
@@ -148,7 +150,7 @@ public:
         old_value = a.load();
       } while (is_reserve_locked(old_value));
 
-      if (is_write_locked(old_value) || read_lock_num(old_value) == read_lock_max()) {
+      if (is_write_locked(old_value) || read_lock_num(old_value) == read_lock_max() || get_waiter(old_value) != 0) {
         return false;
       }
       new_value = old_value + (1ull << READ_LOCK_BIT_OFFSET);
@@ -166,13 +168,13 @@ public:
         old_value = a.load();
       } while (is_reserve_locked(old_value));
       // very likely locked by read lock
-      if (is_read_locked(old_value) || is_write_locked(old_value)) {
+      if (is_read_locked(old_value) || is_write_locked(old_value) || get_waiter(old_value) != 0) {
         new_value = old_value + (1ull << TUPLE_STATUS_OFFSET);
       } else {
         new_value = old_value + (1ull << WRITE_LOCK_BIT_OFFSET);
       }
     } while (!a.compare_exchange_weak(old_value, new_value));
-    return !is_read_locked(old_value) && !is_write_locked(old_value);
+    return !is_read_locked(old_value) && !is_write_locked(old_value) && get_waiter(old_value) == 0;
   }
 
   // if lock fails, reserve the tuple for further scheduling
@@ -184,14 +186,14 @@ public:
         old_value = a.load();
       } while (is_reserve_locked(old_value));
       // very likely locked by write lock
-      if (is_write_locked(old_value) || read_lock_num(old_value) == read_lock_max()) {
+      if (is_write_locked(old_value) || read_lock_num(old_value) == read_lock_max() || get_waiter(old_value) != 0) {
         new_value = old_value + (1ull << TUPLE_STATUS_OFFSET);
       } else {
         new_value = old_value + (1ull << READ_LOCK_BIT_OFFSET);
       }
 
     } while (!a.compare_exchange_weak(old_value, new_value));
-    return !is_write_locked(old_value) && read_lock_num(old_value) < read_lock_max();
+    return !is_write_locked(old_value) && read_lock_num(old_value) < read_lock_max() && get_waiter(old_value) == 0;
   }
 
   static bool reserve_lock(std::atomic<uint64_t> &a)
@@ -265,6 +267,32 @@ public:
     } while (!a.compare_exchange_weak(old_value, new_value));
   }
 
+  static void transfer_write_to_read_locks(std::atomic<uint64_t> &a, uint64_t readers)
+  {
+    DCHECK(readers > 0 && readers <= read_lock_max());
+    uint64_t old_value, new_value;
+    do {
+      old_value = a.load();
+      DCHECK(is_reserve_locked(old_value));
+      DCHECK(is_write_locked(old_value));
+      DCHECK(!is_read_locked(old_value));
+      new_value = old_value - (1ull << WRITE_LOCK_BIT_OFFSET) + (readers << READ_LOCK_BIT_OFFSET);
+    } while (!a.compare_exchange_weak(old_value, new_value));
+  }
+
+  static void transfer_last_read_to_read_locks(std::atomic<uint64_t> &a, uint64_t readers)
+  {
+    DCHECK(readers > 0 && readers <= read_lock_max());
+    uint64_t old_value, new_value;
+    do {
+      old_value = a.load();
+      DCHECK(is_reserve_locked(old_value));
+      DCHECK(read_lock_num(old_value) == 1);
+      DCHECK(!is_write_locked(old_value));
+      new_value = old_value + ((readers - 1) << READ_LOCK_BIT_OFFSET);
+    } while (!a.compare_exchange_weak(old_value, new_value));
+  }
+
   static uint64_t remove_lock_bit(uint64_t value) { return value & ~(LOCK_BIT_MASK << LOCK_BIT_OFFSET); }
 
   static uint64_t remove_read_lock_bit(uint64_t value) { return value & ~(READ_LOCK_BIT_MASK << READ_LOCK_BIT_OFFSET); }
@@ -312,6 +340,21 @@ public:
   }
 
   static bool get_waiter_rw(uint64_t value) { return (value >> WAITER_RW_OFFSET) & WAITER_RW_MASK; }
+
+  static int32_t add_blocked_counter(std::atomic<int32_t> &a, int32_t blocked_counter)
+  {
+    int32_t old_value, new_value;
+    do {
+      old_value = a.load();
+
+      if (old_value < 0) {
+        new_value = blocked_counter;
+      } else {
+        new_value = old_value + blocked_counter;
+      }
+    } while (!a.compare_exchange_weak(old_value, new_value));
+    return new_value;
+  }
 
 public:
   static constexpr int      LOCK_BIT_OFFSET = 54;

@@ -89,8 +89,6 @@ public:
     return (*(message->begin())).get_message_type() == static_cast<uint32_t>(ControlMessage::STATISTICS);
   }
 
-  std::unique_ptr<Message> fetchMessage(Socket &socket) { return nullptr; }
-
 private:
   std::size_t                          id;
   std::size_t                          group_id;

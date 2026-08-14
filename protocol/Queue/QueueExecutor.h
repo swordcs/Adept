@@ -1,4 +1,6 @@
-
+//
+// Created by Yi Lu on 9/13/18.
+//
 
 #pragma once
 
@@ -160,6 +162,7 @@ public:
 
   std::size_t analyze_transactions()
   {
+    auto phase_start = Clock::now();
     std::size_t commit = 0;
     for (auto i = id; i < (*transactions_ptr).size(); i += context.worker_num) {
       (*transactions_ptr)[i]->startTime = std::chrono::steady_clock::now();
@@ -170,6 +173,7 @@ public:
         commit++;
       }
     }
+    add_schedule_time(phase_start);
     return commit;
   }
 
@@ -212,23 +216,29 @@ public:
 
     for (auto i = 0u; i < (*transactions_ptr).size(); i++) {
       auto transaction = (*transactions_ptr)[i].get();
-      auto result      = transaction->execute(id);
+      auto execute_start = Clock::now();
+      auto result = transaction->execute(id);
+      add_execute_time(execute_start);
       n_network_size.fetch_add(transaction->network_size.load());
 
       if (transaction->id % context.worker_num != id) {
-        continue;
+          continue;
       }
 
       if (transaction->abort_no_retry) {
         n_abort_no_retry.fetch_add(1);
       } else if (result == TransactionResult::READY_TO_COMMIT) {
+        execute_start = Clock::now();
         protocol.commit(*transaction);
+        add_execute_time(execute_start);
         auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - transaction->startTime)
                            .count();
         percentile.add(latency);
       } else if (result == TransactionResult::ABORT) {
+        execute_start = Clock::now();
         protocol.abort(*transaction);
+        add_execute_time(execute_start);
       } else {
         CHECK(false) << "abort no retry transaction should not be scheduled.";
       }
@@ -269,6 +279,10 @@ public:
     txn.message_flusher = [this](std::size_t worker_id) {
       auto *worker = this->all_executors[worker_id];
       worker->flush_messages();
+    };
+    txn.network_wait_handler = [this](std::size_t worker_id, std::chrono::steady_clock::time_point start) {
+      auto *worker = this->all_executors[worker_id];
+      worker->add_embedded_network_wait_time(start);
     };
   }
 
@@ -316,7 +330,7 @@ private:
   std::vector<StorageType>                       &storages;
   std::atomic<uint32_t>                          &lock_manager_status, &worker_status;
   std::atomic<uint32_t>                          &n_complete_workers, &n_started_workers;
-  QueuePartitioner                                partitioner;
+  QueuePartitioner                               partitioner;
   WorkloadType                                    workload;
   std::size_t                                     n_lock_manager, n_workers;
   std::size_t                                     lock_manager_id;
@@ -330,6 +344,6 @@ private:
                                    messageHandlers;
   LockfreeQueue<Message *>         in_queue, out_queue;
   LockfreeQueue<TransactionType *> transaction_queue;
-  std::vector<QueueExecutor *>     all_executors;
+  std::vector<QueueExecutor *>    all_executors;
 };
 }  // namespace aria

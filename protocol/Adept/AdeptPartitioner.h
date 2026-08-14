@@ -1,30 +1,38 @@
+//
+// Created by Yi Lu on 2019-09-05.
+//
+
 #pragma once
 
 #include "core/Partitioner.h"
+
+#include <algorithm>
 
 namespace aria {
 class AdeptPartitioner : public Partitioner
 {
 
 public:
-  AdeptPartitioner(
-      std::size_t coordinator_id, std::size_t coordinator_num, std::vector<std::size_t> replica_group_sizes)
+  AdeptPartitioner(std::size_t coordinator_id, std::size_t coordinator_num, std::vector<std::size_t> replica_group_sizes)
       : Partitioner(coordinator_id, coordinator_num)
   {
+    CHECK(coordinator_num > 0);
+    CHECK(coordinator_id < coordinator_num);
+    CHECK(!replica_group_sizes.empty());
+    CHECK(std::all_of(replica_group_sizes.begin(), replica_group_sizes.end(), [](std::size_t size) { return size > 0; }));
+    CHECK(std::accumulate(replica_group_sizes.begin(), replica_group_sizes.end(), std::size_t{0}) == coordinator_num);
 
-    std::size_t size = 0;
+    std::size_t end = 0;
     for (auto i = 0u; i < replica_group_sizes.size(); i++) {
-      CHECK(replica_group_sizes[i] > 0);
-      size += replica_group_sizes[i];
+      end += replica_group_sizes[i];
 
-      if (coordinator_id < size) {
-        coordinator_start_id = size - replica_group_sizes[i];
+      if (coordinator_id < end) {
+        coordinator_start_id = end - replica_group_sizes[i];
         replica_group_id     = i;
         replica_group_size   = replica_group_sizes[i];
         break;
       }
     }
-    CHECK(std::accumulate(replica_group_sizes.begin(), replica_group_sizes.end(), 0u) == coordinator_num);
   }
 
   ~AdeptPartitioner() override = default;

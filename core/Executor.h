@@ -88,6 +88,7 @@ public:
         // backup node stands by for replication
         last_seed = random.get_seed();
 
+        auto schedule_start = Clock::now();
         if (retry_transaction) {
           transaction->reset();
         } else {
@@ -97,10 +98,15 @@ public:
           transaction = workload.next_transaction(context, partition_id, storage);
           setupHandlers(*transaction);
         }
+        add_schedule_time(schedule_start);
 
+        auto execute_start = Clock::now();
         auto result = transaction->execute(id);
+        add_execute_time(execute_start);
         if (result == TransactionResult::READY_TO_COMMIT) {
+          auto commit_start = Clock::now();
           bool commit = protocol.commit(*transaction, messages);
+          add_execute_time(commit_start);
           if (transaction->distributed_transaction)
             simulate_2pc_durable_cost();
           n_network_size.fetch_add(transaction->network_size);
@@ -133,7 +139,9 @@ public:
             retry_transaction = true;
           }
         } else {
+          auto abort_start = Clock::now();
           protocol.abort(*transaction, messages);
+          add_execute_time(abort_start);
           n_abort_no_retry.fetch_add(1);
         }
       }

@@ -1,4 +1,6 @@
-
+//
+// Created by Yi Lu on 9/15/18.
+//
 
 #pragma once
 
@@ -28,10 +30,12 @@ public:
   }
 
   static std::size_t n_lock_manager(
-      std::size_t replica_group_id, std::size_t id, const std::vector<std::size_t> &lock_managers)
+      std::size_t replica_group_id, const std::vector<std::size_t> &lock_managers)
   {
     CHECK(replica_group_id < lock_managers.size());
-    return lock_managers[replica_group_id];
+    auto count = lock_managers[replica_group_id];
+    CHECK(count > 0 && count <= 32);
+    return count;
   }
 
   // assume there are n = 2 lock managers and m = 4 workers
@@ -46,6 +50,7 @@ public:
     if (id < n_lock_manager) {
       return id;
     }
+    CHECK(n_worker >= n_lock_manager && n_worker % n_lock_manager == 0);
     return (id - n_lock_manager) / (n_worker / n_lock_manager);
   }
 
@@ -65,21 +70,9 @@ public:
   static void read(const std::tuple<MetaDataType *, void *> &row, void *dest, std::size_t size)
   {
 
-    MetaDataType &tid = *std::get<0>(row);
-    void         *src = std::get<1>(row);
+    void *src = std::get<1>(row);
     std::memcpy(dest, src, size);
   }
-
-  /**
-   *
-   * The following code is adapted from TwoPLHelper.h
-   * For Adept, we can use lower 63 bits for read locks.
-   * However, 511 locks are enough and the code above is well tested.
-   *
-   * [write lock bit (1) |  read lock bit (9) -- 512 - 1 locks | reservation(2) | epoch (32) | position (20)]
-   *
-   * Max batch size is 2^20 = 1M and max epoch is 2^32 = 4G
-   */
 
   static bool is_read_locked(uint64_t value) { return value & (READ_LOCK_BIT_MASK << READ_LOCK_BIT_OFFSET); }
 
@@ -214,7 +207,7 @@ public:
     uint64_t old_value, new_value;
     do {
       old_value = a.load();
-      DCHECK(is_reserve_locked(old_value));
+      CHECK(is_reserve_locked(old_value));
 
       new_value = old_value - (1ull << (TUPLE_STATUS_OFFSET));
 
@@ -227,8 +220,8 @@ public:
     uint64_t old_value, new_value;
     do {
       old_value = a.load();
-      DCHECK(is_read_locked(old_value));
-      DCHECK(!is_write_locked(old_value));
+      CHECK(is_read_locked(old_value));
+      CHECK(!is_write_locked(old_value));
       new_value = old_value - (1ull << READ_LOCK_BIT_OFFSET);
     } while (!a.compare_exchange_weak(old_value, new_value));
   }
@@ -236,12 +229,12 @@ public:
   static void write_lock_release(std::atomic<uint64_t> &a)
   {
     uint64_t old_value, new_value;
-    old_value = a.load();
-    DCHECK(!is_read_locked(old_value));
-    DCHECK(is_write_locked(old_value));
-    new_value = old_value - (1ull << WRITE_LOCK_BIT_OFFSET);
-    bool ok   = a.compare_exchange_strong(old_value, new_value);
-    DCHECK(ok);
+    do {
+      old_value = a.load();
+      CHECK(!is_read_locked(old_value));
+      CHECK(is_write_locked(old_value));
+      new_value = old_value - (1ull << WRITE_LOCK_BIT_OFFSET);
+    } while (!a.compare_exchange_weak(old_value, new_value));
   }
 
   static void upgrade_read_to_write_lock(std::atomic<uint64_t> &a)
@@ -249,8 +242,8 @@ public:
     uint64_t old_value, new_value;
     do {
       old_value = a.load();
-      DCHECK(read_lock_num(old_value) == 1);
-      DCHECK(!is_write_locked(old_value));
+      CHECK(read_lock_num(old_value) == 1);
+      CHECK(!is_write_locked(old_value));
       new_value = old_value - (1ull << READ_LOCK_BIT_OFFSET) + (1ull << WRITE_LOCK_BIT_OFFSET);
     } while (!a.compare_exchange_weak(old_value, new_value));
   }
@@ -260,7 +253,7 @@ public:
     uint64_t old_value, new_value;
     do {
       old_value = a.load();
-      DCHECK(is_write_locked(old_value));
+      CHECK(is_write_locked(old_value));
       new_value = old_value - (1ull << WRITE_LOCK_BIT_OFFSET) + (1ull << READ_LOCK_BIT_OFFSET);
     } while (!a.compare_exchange_weak(old_value, new_value));
   }
@@ -276,8 +269,8 @@ public:
 
   static uint64_t get_tid(uint64_t epoch, uint64_t tid_offset)
   {
-    DCHECK(epoch < (1ull << 32));
-    DCHECK(tid_offset < (1ull << 20));
+    CHECK(epoch > 0 && epoch < (1ull << 32));
+    CHECK(tid_offset < (1ull << 20));
     return (epoch << EPOCH_OFFSET) | (tid_offset << POS_OFFSET);
   }
 
@@ -289,43 +282,14 @@ public:
 
   static uint64_t set_waiter(std::atomic<uint64_t> &a, uint64_t waiter)
   {
+    CHECK(waiter <= TID_MASK);
     uint64_t old_value, new_value;
     do {
       old_value = a.load();
-      DCHECK(is_reserve_locked(old_value));
+      CHECK(is_reserve_locked(old_value));
       new_value = (old_value & FULL_MASK << 53) | waiter;
     } while (!a.compare_exchange_weak(old_value, new_value));
     return new_value & TID_MASK;
-  }
-
-  static void set_waiter_rw(std::atomic<uint64_t> &a, bool write)
-  {
-    uint64_t old_value, new_value;
-    do {
-      old_value = a.load();
-      if (write) {
-        new_value = old_value | (1ull << WAITER_RW_OFFSET);
-      } else {
-        new_value = old_value & ~(1ull << WAITER_RW_OFFSET);
-      }
-    } while (!a.compare_exchange_weak(old_value, new_value));
-  }
-
-  static bool get_waiter_rw(uint64_t value) { return (value >> WAITER_RW_OFFSET) & WAITER_RW_MASK; }
-
-  static int32_t add_blocked_counter(std::atomic<int32_t> &a, int32_t blocked_counter)
-  {
-    int32_t old_value, new_value;
-    do {
-      old_value = a.load();
-
-      if (old_value < 0) {
-        new_value = blocked_counter;
-      } else {
-        new_value = old_value + blocked_counter;
-      }
-    } while (!a.compare_exchange_weak(old_value, new_value));
-    return new_value;
   }
 
 public:
@@ -340,9 +304,6 @@ public:
 
   static constexpr int      TUPLE_STATUS_OFFSET = 53;
   static constexpr uint64_t TUPLE_STATUS_MASK   = 0x1ull;
-
-  static constexpr int      WAITER_RW_OFFSET = 52;
-  static constexpr uint64_t WAITER_RW_MASK   = 0x1ull;
 
   static constexpr int      EPOCH_OFFSET = 20;
   static constexpr uint64_t EPOCH_MASK   = 0xffffffffull;

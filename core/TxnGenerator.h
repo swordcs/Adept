@@ -1,5 +1,6 @@
 /*
  * @Description: Base class for transaction generators
+ * @Author: Jian Geng
  * @Date: 2025-09-16
  */
 

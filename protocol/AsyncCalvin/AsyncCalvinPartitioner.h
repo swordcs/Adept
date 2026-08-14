@@ -7,12 +7,11 @@
 #include "core/Partitioner.h"
 
 namespace aria {
-class AdeptPartitioner : public Partitioner
+class AsyncCalvinPartitioner : public Partitioner
 {
 
 public:
-  AdeptPartitioner(
-      std::size_t coordinator_id, std::size_t coordinator_num, std::vector<std::size_t> replica_group_sizes)
+  AsyncCalvinPartitioner(std::size_t coordinator_id, std::size_t coordinator_num, std::vector<std::size_t> replica_group_sizes)
       : Partitioner(coordinator_id, coordinator_num)
   {
 
@@ -31,13 +30,13 @@ public:
     CHECK(std::accumulate(replica_group_sizes.begin(), replica_group_sizes.end(), 0u) == coordinator_num);
   }
 
-  ~AdeptPartitioner() override = default;
+  ~AsyncCalvinPartitioner() override = default;
 
   std::size_t replica_num() const override { return replica_group_size; }
 
   bool is_replicated() const override
   {
-    // replica group in Adept is independent
+    // replica group in AsyncCalvin is independent
     return false;
   }
 
@@ -53,7 +52,7 @@ public:
 
   bool is_partition_replicated_on(std::size_t partition_id, std::size_t coordinator_id) const override
   {
-    // replica group in Adept is independent
+    // replica group in AsyncCalvin is independent
     return false;
   }
 

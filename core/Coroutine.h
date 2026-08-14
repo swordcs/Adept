@@ -1,18 +1,21 @@
 #pragma once
 
 #include <coroutine>
+#include <exception>
 #include <functional>
 #include <memory>
+#include <stdexcept>
+#include <utility>
 
 namespace aria {
 
-// 协程任务类型 - 非void特化版本
 template <typename T>
 struct Task
 {
   struct promise_type
   {
-    T value;
+    T                  value{};
+    std::exception_ptr exception;
 
     Task get_return_object() { return Task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
@@ -21,7 +24,7 @@ struct Task
 
     void return_value(T val) { value = std::move(val); }
 
-    void unhandled_exception() {}
+    void unhandled_exception() { exception = std::current_exception(); }
   };
 
   std::coroutine_handle<promise_type> _h;
@@ -48,7 +51,7 @@ struct Task
     return *this;
   }
 
-  bool done() const { return _h.done(); }
+  bool done() const { return !_h || _h.done(); }
   void resume()
   {
     if (_h && !_h.done())
@@ -60,12 +63,11 @@ struct Task
     if (!_h || !_h.done()) {
       throw std::runtime_error("Coroutine not completed");
     }
+    if (_h.promise().exception) {
+      std::rethrow_exception(_h.promise().exception);
+    }
     return _h.promise().value;
   }
-
-  bool await_ready() const { return false; }
-  void await_resume() {}
-  void await_suspend(std::coroutine_handle<> h) {}
 };
 
 template <>
@@ -73,13 +75,15 @@ struct Task<void>
 {
   struct promise_type
   {
+    std::exception_ptr exception;
+
     Task get_return_object() { return Task{std::coroutine_handle<promise_type>::from_promise(*this)}; }
 
     std::suspend_never initial_suspend() { return {}; }
-    std::suspend_never final_suspend() noexcept { return {}; }
+    std::suspend_always final_suspend() noexcept { return {}; }
 
     void return_void() {}
-    void unhandled_exception() {}
+    void unhandled_exception() { exception = std::current_exception(); }
   };
 
   std::coroutine_handle<promise_type> _h;
@@ -106,16 +110,22 @@ struct Task<void>
     return *this;
   }
 
-  bool done() const { return _h.done(); }
+  bool done() const { return !_h || _h.done(); }
   void resume()
   {
     if (_h && !_h.done())
       _h.resume();
   }
 
-  bool await_ready() const { return false; }
-  void await_resume() {}
-  void await_suspend(std::coroutine_handle<> h) {}
+  void get_value()
+  {
+    if (!_h || !_h.done()) {
+      throw std::runtime_error("Coroutine not completed");
+    }
+    if (_h.promise().exception) {
+      std::rethrow_exception(_h.promise().exception);
+    }
+  }
 };
 
 }  // namespace aria

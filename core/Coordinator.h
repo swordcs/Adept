@@ -14,6 +14,7 @@
 #include "core/factory/WorkerFactory.h"
 #include "core/factory/TxnGeneratorFactory.h"
 #include "core/TxnGenerator.h"
+#include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <glog/logging.h>
 #include <thread>
@@ -35,7 +36,6 @@ public:
 
     workers = WorkerFactory::create_workers(id, db, context, workerStopFlag);
 
-    // TODO: All managers should implement set_txn_generators function
     if (check_txn_generator_needed()) {
       txn_generators = TxnGeneratorFactory::create_generators(
           id, db, context, static_cast<Manager *>(workers.back().get()), txnStopFlag);
@@ -99,50 +99,84 @@ public:
       }
     }
 
-    // run timeToRun seconds
-    auto timeToRun = 25, warmup = 10, cooldown = 5;
+    // Keep the historical defaults, but make short, reproducible rebuttal
+    // experiments possible from the command line.
+    auto timeToRun = static_cast<int64_t>(context.runtime_seconds);
+    auto warmup    = static_cast<int64_t>(context.warmup_seconds);
+    auto cooldown  = static_cast<int64_t>(context.cooldown_seconds);
+
+    if (context.mirror_cache_size > 0) {
+      while (!std::all_of(workers.begin(), workers.end(),
+          [](const auto &worker) { return worker->measurement_ready(); })) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      for (const auto &worker : workers) {
+        worker->n_commit.exchange(0);
+        worker->n_abort_no_retry.exchange(0);
+        worker->n_abort_lock.exchange(0);
+        worker->n_abort_read_validation.exchange(0);
+        worker->n_local.exchange(0);
+        worker->n_si_in_serializable.exchange(0);
+        worker->n_network_size.exchange(0);
+        worker->n_phase_schedule_us.exchange(0);
+        worker->n_phase_execute_us.exchange(0);
+        worker->n_phase_network_wait_us.exchange(0);
+        worker->n_phase_embedded_network_wait_us.exchange(0);
+      }
+      LOG(INFO) << "Measurement window starts after MirrorCache training and priming.";
+    }
     auto startTime = std::chrono::steady_clock::now();
 
     uint64_t total_commit = 0, total_abort_no_retry = 0, total_abort_lock = 0, total_abort_read_validation = 0,
-             total_local = 0, total_si_in_serializable = 0, total_network_size = 0;
-    int count = 0;
+             total_local = 0, total_si_in_serializable = 0, total_network_size = 0, total_phase_schedule_us = 0,
+             total_phase_execute_us = 0, total_phase_network_wait_us = 0,
+             total_phase_embedded_network_wait_us = 0;
+    int64_t count = 0;
 
     do {
       std::this_thread::sleep_for(std::chrono::seconds(1));
 
       uint64_t n_commit = 0, n_abort_no_retry = 0, n_abort_lock = 0, n_abort_read_validation = 0, n_local = 0,
-               n_si_in_serializable = 0, n_network_size = 0;
+               n_si_in_serializable = 0, n_network_size = 0, n_phase_schedule_us = 0, n_phase_execute_us = 0,
+               n_phase_network_wait_us = 0, n_phase_embedded_network_wait_us = 0;
 
       for (auto i = 0u; i < workers.size(); i++) {
 
-        n_commit += workers[i]->n_commit.load();
-        workers[i]->n_commit.store(0);
+        n_commit += workers[i]->n_commit.exchange(0);
 
-        n_abort_no_retry += workers[i]->n_abort_no_retry.load();
-        workers[i]->n_abort_no_retry.store(0);
+        n_abort_no_retry += workers[i]->n_abort_no_retry.exchange(0);
 
-        n_abort_lock += workers[i]->n_abort_lock.load();
-        workers[i]->n_abort_lock.store(0);
+        n_abort_lock += workers[i]->n_abort_lock.exchange(0);
 
-        n_abort_read_validation += workers[i]->n_abort_read_validation.load();
-        workers[i]->n_abort_read_validation.store(0);
+        n_abort_read_validation += workers[i]->n_abort_read_validation.exchange(0);
 
-        n_local += workers[i]->n_local.load();
-        workers[i]->n_local.store(0);
+        n_local += workers[i]->n_local.exchange(0);
 
-        n_si_in_serializable += workers[i]->n_si_in_serializable.load();
-        workers[i]->n_si_in_serializable.store(0);
+        n_si_in_serializable += workers[i]->n_si_in_serializable.exchange(0);
 
-        n_network_size += workers[i]->n_network_size.load();
-        workers[i]->n_network_size.store(0);
+        n_network_size += workers[i]->n_network_size.exchange(0);
+
+        n_phase_schedule_us += workers[i]->n_phase_schedule_us.exchange(0);
+
+        n_phase_execute_us += workers[i]->n_phase_execute_us.exchange(0);
+
+        n_phase_network_wait_us += workers[i]->n_phase_network_wait_us.exchange(0);
+
+        n_phase_embedded_network_wait_us += workers[i]->n_phase_embedded_network_wait_us.exchange(0);
       }
 
+      const auto avg_network_size = n_commit == 0 ? 0.0 : 1.0 * n_network_size / n_commit;
+      const auto si_percent       = n_commit == 0 ? 0.0 : 100.0 * n_si_in_serializable / n_commit;
+      const auto local_percent    = n_commit == 0 ? 0.0 : 100.0 * n_local / n_commit;
       LOG(INFO) << "commit: " << n_commit << " abort: " << n_abort_no_retry + n_abort_lock + n_abort_read_validation
                 << " (" << n_abort_no_retry << "/" << n_abort_lock << "/" << n_abort_read_validation
-                << "), network size: " << n_network_size << ", avg network size: " << 1.0 * n_network_size / n_commit
-                << ", si_in_serializable: " << n_si_in_serializable << " " << 100.0 * n_si_in_serializable / n_commit
+                << "), network size: " << n_network_size << ", avg network size: " << avg_network_size
+                << ", si_in_serializable: " << n_si_in_serializable << " " << si_percent
                 << " %"
-                << ", local: " << 100.0 * n_local / n_commit << " %";
+                << ", local: " << local_percent << " %"
+                << ", phase profile us: schedule: " << n_phase_schedule_us << ", execute: " << n_phase_execute_us
+                << ", network_wait: " << n_phase_network_wait_us
+                << ", embedded_network_wait: " << n_phase_embedded_network_wait_us;
       count++;
       if (count > warmup && count <= timeToRun - cooldown) {
         total_commit += n_commit;
@@ -152,6 +186,10 @@ public:
         total_local += n_local;
         total_si_in_serializable += n_si_in_serializable;
         total_network_size += n_network_size;
+        total_phase_schedule_us += n_phase_schedule_us;
+        total_phase_execute_us += n_phase_execute_us;
+        total_phase_network_wait_us += n_phase_network_wait_us;
+        total_phase_embedded_network_wait_us += n_phase_embedded_network_wait_us;
       }
 
     } while (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - startTime).count() <
@@ -159,14 +197,21 @@ public:
 
     count = timeToRun - warmup - cooldown;
 
+    const auto avg_total_network_size = total_commit == 0 ? 0.0 : 1.0 * total_network_size / total_commit;
+    const auto total_si_percent = total_commit == 0 ? 0.0 : 100.0 * total_si_in_serializable / total_commit;
+    const auto total_local_percent = total_commit == 0 ? 0.0 : 100.0 * total_local / total_commit;
+
     LOG(INFO) << "average commit: " << 1.0 * total_commit / count
               << " abort: " << 1.0 * (total_abort_no_retry + total_abort_lock + total_abort_read_validation) / count
               << " (" << 1.0 * total_abort_no_retry / count << "/" << 1.0 * total_abort_lock / count << "/"
               << 1.0 * total_abort_read_validation / count << "), network size: " << total_network_size
-              << ", avg network size: " << 1.0 * total_network_size / total_commit
+              << ", avg network size: " << avg_total_network_size
               << ", si_in_serializable: " << total_si_in_serializable << " "
-              << 100.0 * total_si_in_serializable / total_commit << " %"
-              << ", local: " << 100.0 * total_local / total_commit << " %";
+              << total_si_percent << " %"
+              << ", local: " << total_local_percent << " %"
+              << ", phase profile total us: schedule: " << total_phase_schedule_us
+              << ", execute: " << total_phase_execute_us << ", network_wait: " << total_phase_network_wait_us
+              << ", embedded_network_wait: " << total_phase_embedded_network_wait_us;
 
     workerStopFlag.store(true);
 
@@ -251,7 +296,7 @@ public:
 
     // connect to peers
     auto                  n          = peers.size();
-    constexpr std::size_t retryLimit = 50;
+    constexpr std::size_t retryLimit = 200;
 
     // connect to multiple remote coordinators
     for (auto i = 0u; i < n; i++) {
@@ -273,8 +318,8 @@ public:
 
             // listener on the other side has not been set up.
             LOG(INFO) << "Coordinator " << id << " failed to connect " << i << "(" << peers[i] << ")'s listener "
-                      << listener_id << ", retry in 5 seconds.";
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+                      << listener_id << ", retry in 50 milliseconds.";
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
           }
           if (context.tcp_no_delay) {
@@ -364,7 +409,7 @@ private:
 
   bool check_txn_generator_needed()
   {
-    std::unordered_set<std::string> protocols = {"Calvin", "Adept", "Queue"};
+    std::unordered_set<std::string> protocols = {"Calvin", "AsyncCalvin", "Adept", "Queue", "Q-Store"};
     return protocols.count(context.protocol) == 1;
   }
 

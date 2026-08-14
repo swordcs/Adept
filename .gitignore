@@ -1,7 +1,7 @@
 # Ignore all
 /*
 cmake/*
-
+!revision_figure
 
 ## Unignore the following extensions
 !*.h

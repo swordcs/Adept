@@ -1,4 +1,6 @@
-
+//
+// Created by Yi Lu on 9/13/18.
+//
 
 #pragma once
 
@@ -87,6 +89,8 @@ public:
       wait_all_workers_finish();
       // wait for all machines until they finish the execution phase.
       wait4_ack();
+
+      record_completed_batch();
     }
 
     signal_worker(ExecutorStatus::EXIT);
@@ -113,9 +117,9 @@ public:
       // each worker analyse i, i + n, i + 2n transaction
 
       auto batch = txn_generator->get_batch(true);
-      if (!batch || stopFlag.load()) {
-        break;
-      }
+      // Finish every batch announced by the coordinator before honoring the
+      // local benchmark stop flag.
+      CHECK(batch) << "transaction generator stopped after an Analysis signal";
 
       // pass the ownership of the batch to all executors
       transactions_ptr = batch.get();
@@ -147,6 +151,22 @@ public:
   }
 
   void add_worker(const std::shared_ptr<CalvinExecutor<WorkloadType>> &w) { workers.push_back(w); }
+
+  void record_completed_batch()
+  {
+    uint64_t committed = 0;
+    uint64_t rejected  = 0;
+    for (const auto &transaction : *transactions_ptr) {
+      if (transaction->abort_no_retry)
+        rejected++;
+      else
+        committed++;
+    }
+    // Each coordinator holds the same deterministic batch, so coordinator
+    // zero records it once after cluster-wide completion.
+    n_commit.fetch_add(committed);
+    n_abort_no_retry.fetch_add(rejected);
+  }
 
   void clear_lock_manager_status() { lock_manager_status.store(0); }
 

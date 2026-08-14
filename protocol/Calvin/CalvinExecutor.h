@@ -1,4 +1,6 @@
-
+//
+// Created by Yi Lu on 9/13/18.
+//
 
 #pragma once
 
@@ -171,11 +173,13 @@ public:
 
   void analyze_transactions()
   {
+    auto phase_start = Clock::now();
     for (auto i = id; i < (*transactions_ptr).size(); i += context.worker_num) {
       (*transactions_ptr)[i]->startTime = std::chrono::steady_clock::now();
       // prepare transaction (analyze read/write set, lock read/write set)
       prepare_transaction(*(*transactions_ptr)[i]);
     }
+    add_schedule_time(phase_start);
   }
 
   void prepare_transaction(TransactionType &txn)
@@ -217,6 +221,7 @@ public:
 
   void schedule_transactions()
   {
+    auto phase_start = Clock::now();
 
     // grant locks, once all locks are acquired, assign the transaction to
     // a worker thread in a round-robin manner.
@@ -260,16 +265,13 @@ public:
           auto worker = get_available_worker(request_id++);
           all_executors[worker]->transaction_queue.push((*transactions_ptr)[i].get());
         }
-        // only count once
-        if (i % n_lock_manager == id)
-          n_commit.fetch_add(1);
       } else {
-        // only count once
-        if (i % n_lock_manager == id)
-          n_abort_no_retry.fetch_add(1);
+        // Logical completion is recorded once by CalvinManager after every
+        // coordinator has finished the batch.
       }
     }
     set_lock_manager_bit(id);
+    add_schedule_time(phase_start);
   }
 
   void run_transactions()
@@ -286,17 +288,23 @@ public:
       bool             ok          = transaction_queue.pop();
       DCHECK(ok);
 
+      auto execute_start = Clock::now();
       auto result = transaction->execute(id);
+      add_execute_time(execute_start);
       n_network_size.fetch_add(transaction->network_size.load());
       if (result == TransactionResult::READY_TO_COMMIT) {
+        execute_start = Clock::now();
         protocol.commit(*transaction, lock_manager_id, n_lock_manager, partitioner.replica_group_size);
+        add_execute_time(execute_start);
         auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - transaction->startTime)
                            .count();
         percentile.add(latency);
       } else if (result == TransactionResult::ABORT) {
         // non-active transactions, release lock
+        execute_start = Clock::now();
         protocol.abort(*transaction, lock_manager_id, n_lock_manager, partitioner.replica_group_size);
+        add_execute_time(execute_start);
       } else {
         CHECK(false) << "abort no retry transaction should not be scheduled.";
       }
@@ -337,6 +345,10 @@ public:
     txn.message_flusher = [this](std::size_t worker_id) {
       auto *worker = this->all_executors[worker_id];
       worker->flush_messages();
+    };
+    txn.network_wait_handler = [this](std::size_t worker_id, std::chrono::steady_clock::time_point start) {
+      auto *worker = this->all_executors[worker_id];
+      worker->add_embedded_network_wait_time(start);
     };
   }
 

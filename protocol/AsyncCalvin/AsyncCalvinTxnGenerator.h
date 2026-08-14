@@ -1,11 +1,12 @@
 /*
- * @Description: Adept protocol transaction generator
+ * @Description: AsyncCalvin protocol transaction generator
+ * @Author: Jian Geng
  * @Date: 2025-09-16
  */
 #pragma once
 
-#include "protocol/Adept/Adept.h"
-#include "protocol/Adept/AdeptTransaction.h"
+#include "protocol/AsyncCalvin/AsyncCalvin.h"
+#include "protocol/AsyncCalvin/AsyncCalvinTransaction.h"
 #include <vector>
 #include <memory>
 #include <atomic>
@@ -16,32 +17,32 @@
 namespace aria {
 
 template <class Workload>
-class AdeptTxnGenerator : public TxnGenerator
+class AsyncCalvinTxnGenerator : public TxnGenerator
 {
 public:
   using WorkloadType     = Workload;
   using DatabaseType     = typename WorkloadType::DatabaseType;
   using StorageType      = typename WorkloadType::StorageType;
-  using TransactionType  = AdeptTransaction;
+  using TransactionType  = AsyncCalvinTransaction;
   using ContextType      = typename DatabaseType::ContextType;
   using RandomType       = typename DatabaseType::RandomType;
   using TransactionBatch = std::vector<std::unique_ptr<TransactionType>>;
 
-  AdeptTxnGenerator(std::size_t coordinator_id, std::size_t id, DatabaseType &db, const ContextType &context,
+  AsyncCalvinTxnGenerator(std::size_t coordinator_id, std::size_t id, DatabaseType &db, const ContextType &context,
       std::vector<StorageType> &storages, std::atomic<uint32_t> &epoch, std::atomic<bool> &stop_flag)
       : coordinator_id(coordinator_id),
         id(id),
         db(db),
         context(context),
         storages(storages),
-        partitioner(coordinator_id, context.coordinator_num, AdeptHelper::string_to_vint(context.replica_group)),
+        partitioner(coordinator_id, context.coordinator_num, AsyncCalvinHelper::string_to_vint(context.replica_group)),
         workload(coordinator_id, db, random, partitioner),
         random(id),
         epoch(epoch),
         stop_flag(stop_flag)
   {}
 
-  ~AdeptTxnGenerator() = default;
+  ~AsyncCalvinTxnGenerator() = default;
 
   void start() override
   {
@@ -55,7 +56,8 @@ public:
       std::unique_lock<std::mutex> lock(batch_mutex);
 
       do {
-        condition.wait_for(lock, std::chrono::microseconds(500), [this] { return stop_flag.load() || !batch_ready; });
+        condition.wait_for(
+            lock, std::chrono::microseconds(500), [this] { return stop_flag.load() || !batch_ready; });
 
         if (stop_flag.load()) {
           return;
@@ -123,7 +125,7 @@ private:
   DatabaseType             &db;
   const ContextType        &context;
   std::vector<StorageType> &storages;
-  AdeptPartitioner          partitioner;
+  AsyncCalvinPartitioner           partitioner;
   WorkloadType              workload;
   RandomType                random;
   std::atomic<bool>        &stop_flag;

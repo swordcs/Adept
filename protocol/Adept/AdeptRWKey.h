@@ -1,3 +1,7 @@
+//
+// Created by Yi Lu on 9/14/18.
+//
+
 #pragma once
 
 #include <glog/logging.h>
@@ -121,25 +125,112 @@ public:
 
   uint32_t get_blind_bit() const { return (bitvec >> BLIND_BIT_OFFSET) & BLIND_BIT_MASK; }
 
-private:
-  /*
-   * A bitvec is a 32-bit word.
-   *
-   * [ table id (5) ] | partition id (16) | unused bit (6) |
-   * prepare processed bit (1) | execute processed bit(1) |
-   * write lock bit(1) | read lock bit (1) | local index read (1)  ]
-   *
-   * local index read  is set when the read is from a local read only index.
-   * write lock bit is set when a write lock is acquired.
-   * read lock bit is set when a read lock is acquired.
-   * prepare processed bit is set when process_request has processed this key in
-   * prepare phase exucution processed bit is set when process_request has
-   * processed this key in execution phase
-   */
+  void set_mirror_cache_read_bit()
+  {
+    bitvec |= MIRROR_CACHE_READ_BIT_MASK << MIRROR_CACHE_READ_BIT_OFFSET;
+  }
 
+  void clear_mirror_cache_read_bit()
+  {
+    bitvec &= ~(MIRROR_CACHE_READ_BIT_MASK << MIRROR_CACHE_READ_BIT_OFFSET);
+  }
+
+  uint32_t get_mirror_cache_read_bit() const
+  {
+    return (bitvec >> MIRROR_CACHE_READ_BIT_OFFSET) & MIRROR_CACHE_READ_BIT_MASK;
+  }
+
+  void set_mirror_cache_fill_bit()
+  {
+    bitvec |= MIRROR_CACHE_FILL_BIT_MASK << MIRROR_CACHE_FILL_BIT_OFFSET;
+  }
+
+  void clear_mirror_cache_fill_bit()
+  {
+    bitvec &= ~(MIRROR_CACHE_FILL_BIT_MASK << MIRROR_CACHE_FILL_BIT_OFFSET);
+  }
+
+  uint32_t get_mirror_cache_fill_bit() const
+  {
+    return (bitvec >> MIRROR_CACHE_FILL_BIT_OFFSET) & MIRROR_CACHE_FILL_BIT_MASK;
+  }
+
+  void set_pipelined_read_ready_bit()
+  {
+    bitvec |= PIPELINED_READ_READY_BIT_MASK << PIPELINED_READ_READY_BIT_OFFSET;
+  }
+
+  void clear_pipelined_read_ready_bit()
+  {
+    bitvec &= ~(PIPELINED_READ_READY_BIT_MASK << PIPELINED_READ_READY_BIT_OFFSET);
+  }
+
+  uint32_t get_pipelined_read_ready_bit() const
+  {
+    return (bitvec >> PIPELINED_READ_READY_BIT_OFFSET) & PIPELINED_READ_READY_BIT_MASK;
+  }
+
+  void set_scheduled_lock_bit()
+  {
+    bitvec |= SCHEDULED_LOCK_BIT_MASK << SCHEDULED_LOCK_BIT_OFFSET;
+  }
+
+  void clear_scheduled_lock_bit()
+  {
+    bitvec &= ~(SCHEDULED_LOCK_BIT_MASK << SCHEDULED_LOCK_BIT_OFFSET);
+  }
+
+  uint32_t get_scheduled_lock_bit() const
+  {
+    return (bitvec >> SCHEDULED_LOCK_BIT_OFFSET) & SCHEDULED_LOCK_BIT_MASK;
+  }
+
+  void set_deferred_abort_bit()
+  {
+    bitvec |= DEFERRED_ABORT_BIT_MASK << DEFERRED_ABORT_BIT_OFFSET;
+  }
+
+  void clear_deferred_abort_bit()
+  {
+    bitvec &= ~(DEFERRED_ABORT_BIT_MASK << DEFERRED_ABORT_BIT_OFFSET);
+  }
+
+  uint32_t get_deferred_abort_bit() const
+  {
+    return (bitvec >> DEFERRED_ABORT_BIT_OFFSET) & DEFERRED_ABORT_BIT_MASK;
+  }
+
+  void add_mirror_skip_destination(std::size_t coordinator_id)
+  {
+    DCHECK(coordinator_id < 64);
+    mirror_skip_mask |= uint64_t{1} << coordinator_id;
+  }
+
+  void add_mirror_skip_mask(uint64_t destinations) { mirror_skip_mask |= destinations; }
+
+  bool should_skip_mirror_destination(std::size_t coordinator_id) const
+  {
+    DCHECK(coordinator_id < 64);
+    return (mirror_skip_mask & (uint64_t{1} << coordinator_id)) != 0;
+  }
+
+  void clear_mirror_cache_decisions()
+  {
+    clear_mirror_cache_read_bit();
+    clear_mirror_cache_fill_bit();
+    mirror_skip_mask = 0;
+  }
+
+  void set_mirror_cache_entry(const void *entry) { mirror_cache_entry = entry; }
+
+  const void *get_mirror_cache_entry() const { return mirror_cache_entry; }
+
+private:
   uint32_t    bitvec = 0;
   const void *key    = nullptr;
   void       *value  = nullptr;
+  uint64_t    mirror_skip_mask = 0;
+  const void *mirror_cache_entry = nullptr;
 
 public:
   static constexpr uint32_t TABLE_ID_MASK   = 0x1f;
@@ -165,5 +256,20 @@ public:
 
   static constexpr uint32_t BLIND_BIT_MASK   = 0x1;
   static constexpr uint32_t BLIND_BIT_OFFSET = 5;
+
+  static constexpr uint32_t MIRROR_CACHE_READ_BIT_MASK   = 0x1;
+  static constexpr uint32_t MIRROR_CACHE_READ_BIT_OFFSET = 6;
+
+  static constexpr uint32_t MIRROR_CACHE_FILL_BIT_MASK   = 0x1;
+  static constexpr uint32_t MIRROR_CACHE_FILL_BIT_OFFSET = 7;
+
+  static constexpr uint32_t PIPELINED_READ_READY_BIT_MASK   = 0x1;
+  static constexpr uint32_t PIPELINED_READ_READY_BIT_OFFSET = 8;
+
+  static constexpr uint32_t SCHEDULED_LOCK_BIT_MASK   = 0x1;
+  static constexpr uint32_t SCHEDULED_LOCK_BIT_OFFSET = 9;
+
+  static constexpr uint32_t DEFERRED_ABORT_BIT_MASK   = 0x1;
+  static constexpr uint32_t DEFERRED_ABORT_BIT_OFFSET = 10;
 };
 }  // namespace aria

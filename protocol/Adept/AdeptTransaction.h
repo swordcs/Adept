@@ -1,4 +1,6 @@
-
+//
+// Created by Yi Lu on 9/14/18.
+//
 
 #pragma once
 
@@ -9,11 +11,61 @@
 #include "protocol/Adept/AdeptPartitioner.h"
 #include "protocol/Adept/AdeptRWKey.h"
 #include <chrono>
+#include <deque>
 #include <glog/logging.h>
-#include <thread>
 #include <mutex>
+#include <thread>
 
 namespace aria {
+class AdeptTransaction;
+
+enum class AdeptBlockedWaitType
+{
+  READ,
+  WRITE,
+  ABORT_PROPAGATION
+};
+
+struct AdeptBlockedTxnEntry
+{
+  AdeptBlockedWaitType wait_type;
+  AdeptTransaction    *transaction;
+  AdeptRWKey          *write_key;
+};
+
+// Remote-read replies can be delivered by different workers, but a suspended
+// coroutine must only be resumed by its owner executor.
+class AdeptRemoteWaitQueue
+{
+public:
+  void push(AdeptTransaction *transaction)
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    queue.push_back(transaction);
+  }
+
+  bool try_pop(AdeptTransaction *&transaction)
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    if (queue.empty()) {
+      return false;
+    }
+    transaction = queue.front();
+    queue.pop_front();
+    return true;
+  }
+
+  bool empty() const
+  {
+    std::lock_guard<std::mutex> guard(mutex);
+    return queue.empty();
+  }
+
+private:
+  mutable std::mutex          mutex;
+  std::deque<AdeptTransaction *> queue;
+};
+
 class AdeptTransaction
 {
 
@@ -45,6 +97,21 @@ public:
     operation.clear();
     readSet.clear();
     writeSet.clear();
+    mirror_dependents.clear();
+    lock_counter.store(0);
+    blocked_counter.store(0);
+    deferred_abort_counter.store(0);
+    abort_registration_complete.store(false);
+    abort_dependents_notified.store(false);
+    scheduling_claimed.store(false);
+    ready_for_execution.store(false);
+    execution_enqueued.store(false);
+    {
+      std::lock_guard<std::mutex> guard(remote_wait_mutex);
+      remote_wait_armed.store(false);
+      remote_resume_enqueued.store(false);
+      remote_resume_queue.store(nullptr);
+    }
   }
 
   virtual TransactionResult execute(std::size_t worker_id) = 0;
@@ -181,7 +248,7 @@ public:
           auto &readKey = readSet[i];
           local_index_read_handler(
               readKey.get_table_id(), readKey.get_partition_id(), readKey.get_key(), readKey.get_value());
-        } else {
+        } else if (!readSet[i].get_blind_bit()) {
 
           if (partitioner.has_master_partition(readSet[i].get_partition_id())) {
             local_read.fetch_add(1);
@@ -196,22 +263,23 @@ public:
     };
   }
 
-  void setup_process_requests_in_execution_phase(
-      std::size_t n_lock_manager, std::size_t n_worker, std::size_t replica_group_size)
+  void setup_process_requests_in_execution_phase(std::size_t, std::size_t, std::size_t)
   {
-    process_requests_coro = [this, n_lock_manager, n_worker, replica_group_size](std::size_t worker_id) -> Task<bool> {
-      auto lock_manager_id = AdeptHelper::worker_id_to_lock_manager_id(worker_id, n_lock_manager, n_worker);
-
+    process_requests_coro = [this](std::size_t worker_id) -> Task<bool> {
       for (int i = int(readSet.size()) - 1; i >= 0; i--) {
         if (readSet[i].get_local_index_read_bit()) {
           continue;
         }
 
         if (readSet[i].get_execution_processed_bit()) {
-          break;
+          continue;
         }
 
         auto &readKey = readSet[i];
+        if (readKey.get_blind_bit()) {
+          readKey.set_execution_processed_bit();
+          continue;
+        }
         read_handler(worker_id,
             readKey.get_table_id(),
             readKey.get_partition_id(),
@@ -226,15 +294,9 @@ public:
       message_flusher(worker_id);
 
       if (active_coordinators[coordinator_id]) {
-        bool ready = false;
-        do {
-          ready = local_read.load() <= 0 && remote_read.load() <= 0;
-          if (!ready) {
-            // process remote reads for other workers
-            remote_request_handler(worker_id);
-            co_await std::suspend_always{};
-          }
-        } while (!ready);
+        while (local_read.load(std::memory_order_acquire) > 0 || remote_read.load(std::memory_order_acquire) > 0) {
+          co_await std::suspend_always{};
+        }
 
         co_return false;
       } else {
@@ -243,6 +305,59 @@ public:
     };
   }
 
+  void arm_remote_read_wait(AdeptRemoteWaitQueue *queue)
+  {
+    AdeptRemoteWaitQueue *ready_queue = nullptr;
+    {
+      std::lock_guard<std::mutex> guard(remote_wait_mutex);
+      remote_resume_queue.store(queue, std::memory_order_release);
+      remote_wait_armed.store(true, std::memory_order_release);
+      ready_queue = mark_remote_resume_if_ready();
+    }
+    if (ready_queue != nullptr) {
+      ready_queue->push(this);
+    }
+  }
+
+  void disarm_remote_read_wait()
+  {
+    std::lock_guard<std::mutex> guard(remote_wait_mutex);
+    remote_wait_armed.store(false, std::memory_order_release);
+    remote_resume_enqueued.store(false, std::memory_order_release);
+  }
+
+  void complete_remote_read()
+  {
+    auto previous = remote_read.fetch_sub(1, std::memory_order_acq_rel);
+    CHECK(previous > 0);
+    if (previous == 1) {
+      AdeptRemoteWaitQueue *ready_queue = nullptr;
+      {
+        std::lock_guard<std::mutex> guard(remote_wait_mutex);
+        ready_queue = mark_remote_resume_if_ready();
+      }
+      if (ready_queue != nullptr) {
+        ready_queue->push(this);
+      }
+    }
+  }
+
+private:
+  AdeptRemoteWaitQueue *mark_remote_resume_if_ready()
+  {
+    if (remote_read.load(std::memory_order_acquire) > 0 || !remote_wait_armed.load(std::memory_order_acquire)) {
+      return nullptr;
+    }
+
+    auto *queue = remote_resume_queue.load(std::memory_order_acquire);
+    if (queue == nullptr || remote_resume_enqueued.load(std::memory_order_acquire)) {
+      return nullptr;
+    }
+    remote_resume_enqueued.store(true, std::memory_order_release);
+    return queue;
+  }
+
+public:
   void save_read_count()
   {
     saved_local_read  = local_read.load();
@@ -264,6 +379,7 @@ public:
       }
 
       readSet[i].clear_execution_processed_bit();
+      readSet[i].clear_pipelined_read_ready_bit();
     }
   }
 
@@ -274,8 +390,18 @@ public:
 
   std::atomic<int32_t> lock_counter{0};
   std::atomic<int32_t> blocked_counter{0};
+  std::atomic<int32_t> deferred_abort_counter{0};
+  std::atomic<bool> abort_registration_complete{false};
+  std::atomic<bool> abort_dependents_notified{false};
 
+  std::atomic<bool> scheduling_claimed{false};
   std::atomic<bool> ready_for_execution{false};
+  std::atomic<bool> execution_enqueued{false};
+
+  std::atomic<bool>             remote_wait_armed{false};
+  std::atomic<bool>             remote_resume_enqueued{false};
+  std::atomic<AdeptRemoteWaitQueue *> remote_resume_queue{nullptr};
+  std::mutex                    remote_wait_mutex;
 
   std::chrono::steady_clock::time_point startTime;
   std::atomic<int32_t>                  network_size;
@@ -298,11 +424,13 @@ public:
   std::function<std::size_t(std::size_t)> remote_request_handler;
 
   std::function<void(std::size_t)> message_flusher;
+  std::function<void(std::size_t, std::chrono::steady_clock::time_point)> network_wait_handler;
 
-  Partitioner            &partitioner;
-  std::vector<bool>       active_coordinators;
-  Operation               operation;  // never used
+  Partitioner           &partitioner;
+  std::vector<bool>      active_coordinators;
+  Operation              operation;  // never used
   std::vector<AdeptRWKey> readSet, writeSet;
+  std::vector<AdeptTransaction *> mirror_dependents;
 
   std::function<Task<bool>(std::size_t)> process_requests_coro;
 };

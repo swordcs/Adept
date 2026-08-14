@@ -1,4 +1,6 @@
-
+//
+// Created by Yi Lu on 9/14/18.
+//
 
 #pragma once
 
@@ -186,6 +188,7 @@ public:
   {
     // only read the keys with locks from the lock_manager_id
     process_requests = [this, n_lock_manager, n_worker, replica_group_size](std::size_t worker_id) {
+
       // cannot use unsigned type in reverse iteration
       for (int i = int(readSet.size()) - 1; i >= 0; i--) {
 
@@ -219,9 +222,15 @@ public:
       if (active_coordinators[coordinator_id]) {
 
         // spin on local & remote read
+        auto wait_start = std::chrono::steady_clock::now();
+        bool waited     = false;
         while (local_read.load() > 0 || remote_read.load() > 0) {
+          waited = true;
           // process remote reads for other workers
           remote_request_handler(worker_id);
+        }
+        if (waited && network_wait_handler) {
+          network_wait_handler(worker_id, wait_start);
         }
 
         return false;
@@ -287,11 +296,13 @@ public:
   std::function<std::size_t(std::size_t)> remote_request_handler;
 
   std::function<void(std::size_t)> message_flusher;
+  std::function<void(std::size_t, std::chrono::steady_clock::time_point)> network_wait_handler;
 
-  Partitioner            &partitioner;
-  std::vector<bool>       active_coordinators;
-  Operation               operation;  // never used
+  Partitioner             &partitioner;
+  std::vector<bool>        active_coordinators;
+  Operation                operation;  // never used
   std::vector<QueueRWKey> readSet, writeSet;
   std::vector<int32_t>    keyId;
+
 };
 }  // namespace aria

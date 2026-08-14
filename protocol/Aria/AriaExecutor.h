@@ -144,22 +144,30 @@ public:
       // else only reset the query
 
       if (transactions[i] == nullptr || i >= n_abort) {
+        auto phase_start  = Clock::now();
         auto partition_id = get_partition_id();
         transactions[i]   = workload.next_transaction(context, partition_id, storages[i]);
+        add_schedule_time(phase_start);
       } else {
+        auto phase_start = Clock::now();
         transactions[i]->reset();
+        add_schedule_time(phase_start);
       }
 
+      auto phase_start = Clock::now();
       transactions[i]->set_epoch(cur_epoch);
       transactions[i]->set_id(i * context.coordinator_num + coordinator_id + 1);  // tid starts from 1
       transactions[i]->set_tid_offset(i);
       transactions[i]->execution_phase = false;
       setupHandlers(*transactions[i]);
+      add_schedule_time(phase_start);
 
       count++;
 
       // run transactions
+      phase_start = Clock::now();
       auto result = transactions[i]->execute(id);
+      add_execute_time(phase_start);
       n_network_size.fetch_add(transactions[i]->network_size);
       if (result == TransactionResult::ABORT_NORETRY)
         transactions[i]->abort_no_retry = true;
@@ -179,15 +187,23 @@ public:
       count++;
 
       // wait till all reads are processed
-      while (transactions[i]->pendingResponses > 0)
-        process_request();
+      if (transactions[i]->pendingResponses > 0) {
+        auto wait_start = Clock::now();
+        while (transactions[i]->pendingResponses > 0)
+          process_request();
+        add_network_wait_time(wait_start);
+      }
 
       transactions[i]->execution_phase = true;
       // fill in writes in write set
+      auto phase_start = Clock::now();
       transactions[i]->execute(id);
+      add_execute_time(phase_start);
 
       // start reservation
+      phase_start = Clock::now();
       reserve_transaction(*transactions[i]);
+      add_schedule_time(phase_start);
       if (count % context.batch_flush == 0)
         flush_messages();
     }
@@ -315,7 +331,9 @@ public:
 
       count++;
 
+      auto phase_start = Clock::now();
       analyze_dependency(*transactions[i]);
+      add_schedule_time(phase_start);
       if (count % context.batch_flush == 0)
         flush_messages();
     }
@@ -330,8 +348,12 @@ public:
       count++;
 
       // wait till all checks are processed
-      while (transactions[i]->pendingResponses > 0)
-        process_request();
+      if (transactions[i]->pendingResponses > 0) {
+        auto wait_start = Clock::now();
+        while (transactions[i]->pendingResponses > 0)
+          process_request();
+        add_network_wait_time(wait_start);
+      }
 
       if (context.aria_read_only_optmization && transactions[i]->is_read_only()) {
         n_commit.fetch_add(1);
@@ -343,13 +365,17 @@ public:
       }
 
       if (transactions[i]->waw) {
+        auto phase_start = Clock::now();
         protocol.abort(*transactions[i], messages);
+        add_execute_time(phase_start);
         n_abort_lock.fetch_add(1);
         continue;
       }
 
       if (context.aria_snapshot_isolation) {
+        auto phase_start = Clock::now();
         protocol.commit(*transactions[i], messages);
+        add_execute_time(phase_start);
         n_commit.fetch_add(1);
         auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - transactions[i]->startTime)
@@ -357,7 +383,9 @@ public:
         percentile.add(latency);
       } else if (context.aria_reordering_optmization) {
         if (transactions[i]->war == false || transactions[i]->raw == false) {
+          auto phase_start = Clock::now();
           protocol.commit(*transactions[i], messages);
+          add_execute_time(phase_start);
           n_commit.fetch_add(1);
           auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
               std::chrono::steady_clock::now() - transactions[i]->startTime)
@@ -365,13 +393,19 @@ public:
           percentile.add(latency);
         } else {
           n_abort_lock.fetch_add(1);
+          auto phase_start = Clock::now();
           protocol.abort(*transactions[i], messages);
+          add_execute_time(phase_start);
         }
       } else if (transactions[i]->raw) {
         n_abort_lock.fetch_add(1);
+        auto phase_start = Clock::now();
         protocol.abort(*transactions[i], messages);
+        add_execute_time(phase_start);
       } else {
+        auto phase_start = Clock::now();
         protocol.commit(*transactions[i], messages);
+        add_execute_time(phase_start);
         n_commit.fetch_add(1);
         auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - transactions[i]->startTime)

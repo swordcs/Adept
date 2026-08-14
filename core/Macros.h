@@ -7,6 +7,7 @@
 #define GLOG_USE_GLOG_EXPORT
 #include "glog/logging.h"
 #include <boost/algorithm/string/split.hpp>
+#include <cstdint>
 #include <gflags/gflags.h>
 DEFINE_string(servers, "127.0.0.1:10010", "semicolon-separated list of servers");
 DEFINE_int32(id, 0, "coordinator id");
@@ -19,16 +20,16 @@ DEFINE_int32(batch_size, 100, "star or calvin batch size");
 DEFINE_int32(group_time, 10, "group commit frequency");
 DEFINE_int32(batch_flush, 50, "batch flush");
 DEFINE_int32(sleep_time, 1000, "retry sleep time");
-DEFINE_string(protocol, "aria", "transaction protocol");
-DEFINE_string(replica_group, "1,3", "calvin replica group");
-DEFINE_string(lock_manager, "1,1", "calvin lock manager");
+DEFINE_string(protocol, "Aria", "transaction protocol");
+DEFINE_string(replica_group, "1", "calvin replica group");
+DEFINE_string(lock_manager, "1", "calvin lock manager");
 DEFINE_bool(read_on_replica, false, "read from replicas");
 DEFINE_bool(local_validation, false, "local validation");
 DEFINE_bool(rts_sync, false, "rts sync");
 DEFINE_bool(star_sync, false, "synchronous write in the single-master phase");
 DEFINE_bool(star_dynamic_batch_size, true, "dynamic batch size");
 DEFINE_bool(plv, true, "parallel locking and validation");
-DEFINE_bool(same_batch, false, "always run the same batch of txns in calvin.");
+DEFINE_bool(same_batch, false, "always run the same batch of txns in calvin and bohm.");
 DEFINE_bool(aria_read_only, true, "aria read only optimization");
 DEFINE_bool(aria_reordering, true, "aria reordering optimization");
 DEFINE_bool(aria_si, false, "aria snapshot isolation");
@@ -42,12 +43,35 @@ DEFINE_bool(cpu_affinity, true, "pinning each thread to a separate core");
 DEFINE_int32(cpu_core_id, 0, "cpu core id");
 DEFINE_int32(durable_write_cost, 0, "the cost of durable write in microseconds");
 DEFINE_bool(exact_group_commit, false, "dynamically adjust group time.");
-DEFINE_bool(mvcc, false, "use mvcc storage.");
+DEFINE_bool(mvcc, false, "use MVCC storage.");
+DEFINE_bool(bohm_local, false, "locality optimization for Bohm.");
+DEFINE_bool(bohm_single_spin, false, "spin optimization for Bohm.");
+DEFINE_int32(ariaFB_lock_manager, 1, "# of lock managers in Aria's fallback mode.");
 DEFINE_int32(txn_generator_num, 1, "# of threads to generate transactions.");
-DEFINE_bool(blocked_optimize, false, "optimize blocked transaction handling for Adept.");
+DEFINE_bool(blocked_optimize, true, "optimize blocked transaction handling for Adept.");
+DEFINE_bool(adept_pipelined_shipping, true, "ship acquired Adept reads while a transaction waits for other locks.");
+DEFINE_int32(runtime, 25, "benchmark runtime in seconds.");
+DEFINE_int32(warmup, 10, "warmup interval in seconds.");
+DEFINE_int32(cooldown, 5, "cooldown interval in seconds.");
+DEFINE_int32(caracal_threshold, 16, "pending-version threshold for Caracal split-on-demand.");
+DEFINE_int32(mirror_cache_size, 0, "number of deterministic remote keys cached by Adept.");
+DEFINE_int32(mirror_cache_warmup_batches, 1, "number of deterministic batches used to select MirrorCache keys.");
 
 #define SETUP_CONTEXT(context)                                                           \
   boost::algorithm::split(context.peers, FLAGS_servers, boost::is_any_of(";"));          \
+  CHECK(FLAGS_id >= 0 && static_cast<std::size_t>(FLAGS_id) < context.peers.size());     \
+  CHECK(FLAGS_threads > 0);                                                              \
+  CHECK(FLAGS_io > 0);                                                                   \
+  CHECK(FLAGS_partition_num > 0);                                                        \
+  CHECK(FLAGS_batch_size > 0);                                                           \
+  CHECK(FLAGS_runtime > 0);                                                              \
+  CHECK(FLAGS_warmup >= 0);                                                              \
+  CHECK(FLAGS_cooldown >= 0);                                                            \
+  CHECK(static_cast<int64_t>(FLAGS_runtime) >                                            \
+        static_cast<int64_t>(FLAGS_warmup) + static_cast<int64_t>(FLAGS_cooldown));      \
+  CHECK(FLAGS_ariaFB_lock_manager >= 0);                                                 \
+  CHECK(FLAGS_mirror_cache_size >= 0);                                                   \
+  CHECK(FLAGS_mirror_cache_warmup_batches > 0);                                          \
   context.coordinator_num                  = context.peers.size();                       \
   context.coordinator_id                   = FLAGS_id;                                   \
   context.worker_num                       = FLAGS_threads;                              \
@@ -83,6 +107,23 @@ DEFINE_bool(blocked_optimize, false, "optimize blocked transaction handling for 
   context.durable_write_cost               = FLAGS_durable_write_cost;                   \
   context.exact_group_commit               = FLAGS_exact_group_commit;                   \
   context.mvcc                             = FLAGS_mvcc;                                 \
+  context.bohm_local                       = FLAGS_bohm_local;                           \
+  context.bohm_single_spin                 = FLAGS_bohm_single_spin;                     \
+  context.ariaFB_lock_manager              = FLAGS_ariaFB_lock_manager;                  \
   context.txn_generator_num                = FLAGS_txn_generator_num;                    \
   context.blocked_optimize                 = FLAGS_blocked_optimize;                     \
+  context.adept_pipelined_shipping         = FLAGS_adept_pipelined_shipping;             \
+  context.runtime_seconds                  = FLAGS_runtime;                              \
+  context.warmup_seconds                   = FLAGS_warmup;                               \
+  context.cooldown_seconds                 = FLAGS_cooldown;                             \
+  context.caracal_threshold                = FLAGS_caracal_threshold;                    \
+  context.mirror_cache_size                = FLAGS_mirror_cache_size;                    \
+  context.mirror_cache_warmup_batches      = FLAGS_mirror_cache_warmup_batches;          \
+  if (context.protocol == "Bohm" || context.protocol == "Caracal" ||                   \
+      context.protocol == "Adept")                                                       \
+    context.mvcc = true;                                                                 \
+  if (context.protocol == "AriaFB")                                                      \
+    CHECK(context.ariaFB_lock_manager > 0);                                              \
+  CHECK(context.coordinator_num == 1 || context.bohm_single_spin == false)               \
+      << "bohm_single_spin must be used in single-node mode.";                           \
   context.set_star_partitioner();

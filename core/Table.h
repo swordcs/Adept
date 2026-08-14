@@ -9,6 +9,7 @@
 #include "common/HashMap.h"
 #include "common/MVCCHashMap.h"
 #include "common/StringPiece.h"
+#include <functional>
 #include <memory>
 
 #include "core/Context.h"
@@ -61,6 +62,14 @@ public:
   virtual void serialize_value(Encoder &enc, const void *value) = 0;
 
   virtual std::size_t key_size() = 0;
+
+  virtual std::shared_ptr<const void> clone_key(const void *key) = 0;
+
+  virtual std::size_t hash_key(const void *key) = 0;
+
+  virtual bool key_equal(const void *lhs, const void *rhs) = 0;
+
+  virtual bool key_less(const void *lhs, const void *rhs) = 0;
 
   virtual std::size_t value_size() = 0;
 
@@ -143,7 +152,7 @@ public:
   // Search for the last version of a particular key.
   MetaDataType &insert_pure_holder(const void *key, uint64_t version = 0) override
   {
-    DCHECK(false) << "Not implemented.";
+    return search_metadata(key, version);
   }
 
   std::tuple<MetaDataType *, void *> search_last(const void *key) override
@@ -155,7 +164,6 @@ public:
 
   void *search_value_last(const void *key) override
   {
-    DCHECK(false) << "Not implemented.";
     const auto &k = *static_cast<const KeyType *>(key);
     return &std::get<1>(map_[k]);
   }
@@ -168,7 +176,7 @@ public:
 
   MetaDataType &search_metadata_version_last(const void *key, uint64_t version) override
   {
-    DCHECK(false) << "Not implemented.";
+    return search_metadata(key, version);
   }
 
   void update_version_last(const void *key, const void *value, uint64_t version = 0) override { update(key, value); }
@@ -201,6 +209,26 @@ public:
   }
 
   std::size_t key_size() override { return sizeof(KeyType); }
+
+  std::shared_ptr<const void> clone_key(const void *key) override
+  {
+    return std::make_shared<KeyType>(*static_cast<const KeyType *>(key));
+  }
+
+  std::size_t hash_key(const void *key) override
+  {
+    return std::hash<KeyType>{}(*static_cast<const KeyType *>(key));
+  }
+
+  bool key_equal(const void *lhs, const void *rhs) override
+  {
+    return *static_cast<const KeyType *>(lhs) == *static_cast<const KeyType *>(rhs);
+  }
+
+  bool key_less(const void *lhs, const void *rhs) override
+  {
+    return *static_cast<const KeyType *>(lhs) < *static_cast<const KeyType *>(rhs);
+  }
 
   std::size_t value_size() override { return sizeof(ValueType); }
 
@@ -311,7 +339,9 @@ public:
     bool        ok = map_.contains_key_version(k, version);
     DCHECK(ok == false) << "version: " << version << " already exists.";
     auto &row = map_.insert_key_version_holder(k, version);
-    return std::get<0>(row);
+    auto &metadata = std::get<0>(row);
+    metadata.store(0, std::memory_order_relaxed);
+    return metadata;
   }
 
   std::tuple<MetaDataType *, void *> search_last(const void *key) override
@@ -325,7 +355,6 @@ public:
 
   void *search_value_last(const void *key) override
   {
-    DCHECK(false) << "Not implemented.";
     const auto &k     = *static_cast<const KeyType *>(key);
     auto       *v_ptr = map_.get_key_latest(k);
     CHECK(v_ptr != nullptr) << "key does not exist.";
@@ -393,6 +422,26 @@ public:
   }
 
   std::size_t key_size() override { return sizeof(KeyType); }
+
+  std::shared_ptr<const void> clone_key(const void *key) override
+  {
+    return std::make_shared<KeyType>(*static_cast<const KeyType *>(key));
+  }
+
+  std::size_t hash_key(const void *key) override
+  {
+    return std::hash<KeyType>{}(*static_cast<const KeyType *>(key));
+  }
+
+  bool key_equal(const void *lhs, const void *rhs) override
+  {
+    return *static_cast<const KeyType *>(lhs) == *static_cast<const KeyType *>(rhs);
+  }
+
+  bool key_less(const void *lhs, const void *rhs) override
+  {
+    return *static_cast<const KeyType *>(lhs) < *static_cast<const KeyType *>(rhs);
+  }
 
   std::size_t value_size() override { return sizeof(ValueType); }
 

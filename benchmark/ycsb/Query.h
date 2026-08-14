@@ -123,7 +123,8 @@ private:
       do {
         retry = false;
 
-        if (context.isUniform) {
+        if (context.isUniform || (context.skewPattern == YCSBSkewPattern::READ && query.UPDATE[i]) ||
+            (context.skewPattern == YCSBSkewPattern::WRITE && !query.UPDATE[i])) {
           key = random.uniform_dist(0, static_cast<int>(context.keysPerPartition) - 1);
         } else {
           key = Zipf::globalZipf().value(random.next_double());
@@ -174,7 +175,8 @@ private:
       do {
         retry = false;
 
-        if (context.isUniform) {
+        if (context.isUniform || (context.skewPattern == YCSBSkewPattern::READ && query.UPDATE[i]) ||
+            (context.skewPattern == YCSBSkewPattern::WRITE && !query.UPDATE[i])) {
           key = random.uniform_dist(0, static_cast<int>(context.keysPerPartition * context.partition_num) - 1);
         } else {
           key = Zipf::globalZipf().value(random.next_double());

@@ -470,7 +470,7 @@ public:
 
     if (C_ID == 0) {
       storage.customer_name_idx_key = customer_name_idx::key(C_W_ID, C_D_ID, query.C_LAST);
-      this->search_for_read(
+      this->search_local_index(
           customerNameIdxTableID, C_W_ID - 1, storage.customer_name_idx_key, storage.customer_name_idx_value);
 
       this->process_requests(worker_id);
@@ -605,7 +605,7 @@ public:
 
     if (C_ID == 0) {
       storage.customer_name_idx_key = customer_name_idx::key(C_W_ID, C_D_ID, query.C_LAST);
-      this->search_for_read(
+      this->search_local_index(
           customerNameIdxTableID, C_W_ID - 1, storage.customer_name_idx_key, storage.customer_name_idx_value);
 
       this->process_requests(worker_id);

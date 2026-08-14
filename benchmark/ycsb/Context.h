@@ -83,8 +83,6 @@ public:
   bool two_partitions   = false;
   bool global_key_space = false;
 
-  std::size_t mirro_cache_size = 0; // number of remote keys are cached.
-
   PartitionStrategy strategy = PartitionStrategy::ROUND_ROBIN;
 };
 }  // namespace ycsb
